@@ -1,0 +1,13 @@
+# site config, captures, models, runtime artifacts — never commit
+wpacrack.conf
+*.cap
+*.pcap
+*.22000
+*.key
+*.mdl
+model/
+library/
+incoming/ cracked/ tried/
+*.log
+__pycache__/
+*.pyc

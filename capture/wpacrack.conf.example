@@ -1,0 +1,10 @@
+# wpacrack site config — copy to wpacrack.conf, fill in YOUR OWN authorized AP. Never committed.
+iface        = wlan1
+essid        = YOUR_LAB_SSID
+# BSSID:CHANNEL pairs (allow-list). A dual-band AP has two BSSIDs differing by last hex digit.
+targets      = AA:BB:CC:DD:EE:FF:1, AA:BB:CC:DD:EE:F0:36
+custom_seeds =
+# harvest (continuous library) mode:
+library      = /opt/wpacrack/library
+cooldown     = 1800
+refresh_ttl  = 86400
