@@ -28,6 +28,7 @@ between them over SSH.
 - [Testing end-to-end](#-testing-end-to-end)
 - [Status matrix](#-status-matrix)
 - [Roadmap](#-roadmap)
+- [Cloud crack fast-lane (VPS / GPU cloud)](#️-cloud-crack-fast-lane-vps--gpu-cloud--options--cost)
 
 ---
 
@@ -342,22 +343,75 @@ Verified locally: `aircrack-ng` cracks the generated handshake → `KEY FOUND! [
 |---|---|---|
 | Capture appliance (harvest) | ✅ working | headless, scope-locked, lockout-safe |
 | Conveyor belt (pull) | ✅ working | source-restricted key, retry-safe (when link is up) |
-| aircrack harness | ✅ proven | cracks synthetic handshake → `password` |
+| aircrack harness | ✅ proven | cracks handshakes natively on the Pi CPU |
+| **live crack on home-pie** | ✅ **proven** | candidate-file + aircrack → `KEY FOUND! [ password ]` at ~46–95k keys/s |
+| Pi candidate-file fix | ✅ done | 1.24M ordered candidates pre-generated + shipped; **no model-load at crack time** |
 | apresearch model | ✅ working | 47k-entry index, vuln-class predictions |
-| **home-pie Wi-Fi link** | ⚠️ unreliable | drops frequently → **put home-pie on Ethernet** |
-| **markovgen on a Pi** | ⚠️ slow | 340k-context model load+gen is heavy on ARM → use a smaller model / pre-gen lists |
+| **home-pie Wi-Fi link** | ⚠️ unreliable | drops frequently → **put home-pie on Ethernet** (the one remaining caveat) |
+| markovgen live-gen on a Pi | ⚠️ superseded | heavy on ARM → replaced by the pre-generated candidate file; live model kept as a fallback |
 | hashcat on a Pi | ❌ unusable | pocl CPU kernel-init segfault → aircrack instead |
-| live single-shot crack | ⏳ pending | blocked only by the two ⚠️ items above |
 
 ---
 
 ## 🧭 Roadmap
-1. **home-pie → Ethernet** (kills the link-reliability caveat).
-2. **Lighter model on the Pi** (lower order / pruned, or pre-generated candidate lists) for practical
-   generation speed.
-3. Full **live single-shot** end-to-end demo once (1) and (2) land.
+1. **home-pie → Ethernet** — the one remaining reliability caveat.
+2. ✅ ~~Lighter model on the Pi~~ — **done**: pre-generated candidate file shipped; live crack proven.
+3. Unattended cron belt run end-to-end once home-pie is on a stable link.
 4. Optional: relocate `apresearch` onto home-pie to scale the research side.
-5. Commit `markovgen.py` + a refined `crackstack` here after the clean live run.
+5. **Cloud GPU crack fast-lane** — a rented GPU as the ultimate crack harness → see next section.
+6. Commit `markovgen.py` + the refined `crackstack` here.
+
+---
+
+## ☁️ Cloud crack fast-lane (VPS / GPU cloud) — options & cost
+
+A rented GPU is just **another crack harness** in the fast-lane (same role as the laptop, but bigger):
+capture on the Pi → ship the tiny `.22000`/`.cap` → run `hashcat -m 22000` on the cloud GPU → get the
+PSK → **destroy the instance**. Handy for big wordlist/rule runs the Pi (or laptop) would grind on.
+
+WPA2 (mode `22000`) is a *slow* hash (PBKDF2-HMAC-SHA1 ×4096), so the number that matters is
+`hashcat -m 22000` throughput. Reference points from this project: **Pi aircrack ≈ 50–95 kH/s**,
+**laptop RTX 4050 ≈ 325 kH/s**.
+
+| Provider | Example GPU | ~m22000 speed | ~On-demand $/hr | Best for |
+|---|---|---:|---:|---|
+| **Vast.ai** (marketplace) | RTX 4090 | ~1.8–2.2 MH/s | **~$0.30–0.55** | cheapest per-crack; interruptible/spot |
+| **RunPod** (community cloud) | RTX 4090 | ~1.8–2.2 MH/s | ~$0.34–0.70 | ready hashcat templates, easy spin-up |
+| **Linode / Akamai GPU** | RTX 4000 Ada | ~0.9–1.1 MH/s | ~$0.52 (per GPU) | predictable, managed, hourly-billed |
+| **Linode / Akamai GPU** | RTX 6000 Ada (dedicated) | ~2.3–2.6 MH/s | ~$1.50 | heavier managed runs |
+| **AWS EC2** | `g6`/`g5` (L4 / A10G) | ~0.5–0.9 MH/s | ~$0.80–1.00 (spot ~⅓) | already in AWS; scriptable spot |
+| **AWS EC2** | `g4dn` (T4) | ~0.2 MH/s | ~$0.53 (spot ~$0.16) | cheapest AWS, slower |
+| **Paperspace** | A4000 / RTX 5000 | ~0.5–0.9 MH/s | ~$0.51–0.76 | notebook-style, managed |
+| **Lambda** | A100 40 GB | ~1.4–1.6 MH/s | ~$1.10 | when A100/H100 are idle-priced |
+
+> 💷 **Prices are approximate (early 2026) — always check current rates.** Marketplace (Vast/RunPod)
+> is cheapest but interruptible; Linode/AWS are steadier but pricier. Multi-GPU scales throughput
+> ~linearly if you're impatient.
+
+### What a crack actually costs (it's the wordlist, not the GPU-hour)
+On a ~2 MH/s GPU (e.g. a $0.40/hr RTX 4090):
+
+| Attack | Keyspace | Time | Cost |
+|---|---:|---:|---:|
+| rockyou (14 M) | 14 M | ~7 s | **≈ $0.00** |
+| rockyou × `best64` rules | ~1.1 B | ~9 min | ~**$0.06** |
+| big combined list + rules | ~10–50 B | ~1.5–7 h | ~**$0.60–$3** |
+| full 8-char brute force | ~6 × 10¹³+ | months–years | **infeasible at any budget** |
+
+**Recommendation for this pipeline:**
+- **Occasional authorized cracks → Vast.ai or RunPod RTX 4090** (~$0.30–0.55/hr): spin up, run the
+  list, tear down — a typical crack costs *pennies*.
+- **Want it managed / same ecosystem as your other infra → Linode GPU** (RTX 4000 Ada ~$0.52/hr;
+  RTX 6000 Ada ~$1.50/hr). Simplest hourly billing, no marketplace variance.
+- **Already on AWS →** `g6`/`g5` **spot** instances with an auto-teardown script.
+- Feed the cloud box the **`.22000`** the Pi produces (`hcxpcapngtool`), or use `markovgen` to stream
+  ordered candidates into cloud hashcat for smarter-than-a-wordlist runs.
+
+### ⚠️ Before you rent
+- **Authorized handshakes only.** Nearly every provider's ToS forbids unauthorized attacks — only
+  crack networks you own or are permitted to test.
+- **Upload the handshake, nothing else** (no identifying context); **destroy the instance** after use.
+- Prefer **spot/interruptible + a teardown timer** so a forgotten instance can't run up a bill.
 
 ---
 
