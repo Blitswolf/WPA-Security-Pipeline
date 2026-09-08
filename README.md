@@ -407,6 +407,44 @@ On a ~2 MH/s GPU (e.g. a $0.40/hr RTX 4090):
 - Feed the cloud box the **`.22000`** the Pi produces (`hcxpcapngtool`), or use `markovgen` to stream
   ordered candidates into cloud hashcat for smarter-than-a-wordlist runs.
 
+### 🔎 Evidence-based estimate for *this* handshake
+
+The real lab handshake has already survived a lot of work — and that record **is** the evidence:
+
+| Attack already tried | Keyspace | Result |
+|---|---:|---|
+| rockyou (14 M) | 1.4 × 10⁷ | ❌ exhausted, no hit |
+| targeted seed list (name + digits/years) | ~10⁴ | ❌ miss |
+| combined 41 M-corpus markov, ~2.6 M ordered candidates | 2.6 × 10⁶ | ❌ miss |
+| rockyou × `best64` / `d3ad0ne` rules | ~10⁹ | ❌ miss |
+
+**What that rules out:** not a common leaked password, not a simple name+digits, not in the top few
+million most-probable human passwords *or* their common mangles. So the PSK is **high-entropy — a long
+and/or non-dictionary passphrase.** (The prior key was a name+digits password; the post-rename key is
+clearly stronger.)
+
+**Cost by remaining scenario** (rented RTX 4090 ≈ 2 MH/s @ ~$0.40/hr):
+
+| If the PSK is… | Approach | Time (1× 4090) | ~Cost | Verdict |
+|---|---|---:|---:|---|
+| a *harder* human password (big-leak / heavy mangle) | `weakpass_4` (~10¹⁰) + a strong ruleset | ~1.5 h – ~1 day | **~$1–$10** | ✅ worth a bounded try |
+| a 4-word passphrase / uncommon structure | combinator · PRINCE · targeted masks | ~hours–days | ~$5–$40 | ⚠️ low-confidence, only with a hunch |
+| ≥10-char effectively random (a–z0–9) | brute force (≥3.6 × 10¹⁵) | ~decades on 1 GPU | **$10k–$100k+** | ❌ uneconomic — don't |
+
+**Recommended approach (evidence-driven):**
+1. **One bounded cloud run, budget ≈ $10–$30.** Rent a Vast.ai / RunPod **RTX 4090** and run
+   **`weakpass_4` + `OneRuleToRuleThemAll`**, optionally streaming `markovgen` order-4 candidates as a
+   supplement. This is the *last economically sane* dictionary-class attempt — the only tier with real
+   upside left.
+2. **If that misses → stop cracking.** The evidence says the key is high-entropy; brute force is
+   decades and five-figure sums. Pivot to the **non-crypto attack surface** (that's precisely what
+   `apvulnd` + `apresearch` exist for — AP firmware / management-plane vulns), or accept the network as
+   well-secured.
+
+**Expected outcome for this specific handshake:** most likely **not cracked** even after the ~$10–$30
+run, since everything tractable has already missed. So the honest expected spend is **~$10–$30 to
+*confirm* it's uncrackable**, not an open-ended bill — treat a hit as a pleasant surprise, not the base case.
+
 ### ⚠️ Before you rent
 - **Authorized handshakes only.** Nearly every provider's ToS forbids unauthorized attacks — only
   crack networks you own or are permitted to test.
