@@ -5,9 +5,12 @@ each doing the workload it is actually good at, and moves small artifacts (hands
 between them over SSH.
 
 > ⚠️ **Authorized use only.** Every component is hard-scoped to the operator's own access point (a
-> BSSID allow-list). This is a defensive / research tool for networks you own or are explicitly
-> permitted to test. It performs **no online guessing and no WPS-PIN brute** — cracking is 100%
-> offline, so it can never trip an AP lockout.
+> BSSID allow-list) — for networks you own or are explicitly permitted to test. The **cracking path
+> is 100% offline** (no online guessing), so cracking itself can never trip a lockout. The pipeline
+> also includes **opt-in active-attack stages** (WPS recovery, evil-twin PSK capture, and an own-AP
+> thermal stress load) — each **disarmed by default** and engineered to be lockout-safe: the WPS
+> stage aborts on any lock/rate-limit and honours long per-target cooldowns, and the stress load
+> sends **no WPS frames at all**, so none of them can trip the WPS lockout.
 
 📖 **[`DESIGN.md`](DESIGN.md)** holds the deep theory; this README is the detailed, visual tour.
 
@@ -20,6 +23,7 @@ between them over SSH.
 - [The core theory: models need a harness](#-the-core-theory-models-need-a-harness)
 - [Why aircrack-ng and not hashcat on the Pi](#-why-aircrack-ng-and-not-hashcat-on-the-pi)
 - [Component deep-dives](#-component-deep-dives)
+- [Active-attack stages (opt-in)](#️-active-attack-stages-opt-in)
 - [The no-lockout escalation ladder](#-the-no-lockout-escalation-ladder)
 - [crackstack internal logic](#-crackstack-internal-logic)
 - [Scope & security model](#-scope--security-model)
@@ -186,13 +190,15 @@ minimum, seedable.
 
 ### 5. `apresearch` — exploit-intel model → [Apresearch-Model](https://github.com/Blitswolf/Apresearch-Model)
 When `searchsploit` finds nothing, it reasons over the **whole** exploit-db (TF-IDF + char-4-gram)
-→ nearest analogues → predicted vuln classes → mined endpoint/param/payload **test plan**. Runs
-continuously at low priority to use spare CPU.
+→ nearest analogues → predicted vuln classes → mined endpoint/param/payload **test plan**. Its
+cosine-ranking is **parallelised across the Pi 5's cores** (workers fork after the index loads,
+sharing it copy-on-write) yet stays `SCHED_IDLE` so it uses spare CPU and yields to the RF stack.
 
 ### 6. `apvulnd` — AP recon (kali-pie)
 Hourly: fingerprints the AP from beacons (vendor / WPS / RSN / PMF / cipher), runs `searchsploit`,
 feeds `apresearch`, and — only when the AP mgmt IP is reachable — a bounded **non-destructive**
-sweep. Recon only; no brute.
+sweep. Recon only; no brute. Its fingerprint is enriched by **`aprecon`** (see active-attack stages)
+with real client/PNL data and the AP's WPS M1 device identity.
 
 ---
 
@@ -210,7 +216,48 @@ flowchart TD
     style D fill:#12432b,color:#fff
 ```
 
-Cracking is **entirely offline** → the AP is never sent a single password guess.
+Cracking is **entirely offline** → the AP is never sent a single password guess. The **opt-in
+active stages** below extend this ladder with their *own* lockout-safety (WPS aborts on any lock
+signal; the stress load sends no WPS frames at all).
+
+---
+
+## ⚔️ Active-attack stages (opt-in)
+
+Beyond passive capture + offline crack, the pipeline has **opt-in active stages** for when the PSK
+won't fall to a wordlist. Each is scope-locked to the allow-listed BSSID, **ships disarmed**, and
+coexists with the harvest through a shared radio flock (both stay in monitor mode; only one transmits
+at a time). They also share **BSSID-anchored channel rediscovery** — the harvest publishes the AP's
+current channel (following 2.4 GHz auto-channel changes and 5 GHz DFS moves) and every stage reads it,
+so none sits blind on a dead channel.
+
+### `wps_attack` — lockout-safe WPS recovery
+Recon (`wash`) → **pixie-dust** (`reaver -K` / `bully -d`) → a conservative online PIN **only** if
+pixie fails. Hard rule: it **aborts the instant** the AP signals a lock/rate-limit, throttles with
+`-d`/`-r`, never uses `--ignore-locks`, and applies per-target cooldowns (6 h after a dry run, 24 h
+after any lock signal) so it can never grind an AP toward a blacklist. Continual daemon, gated by
+`wps_enabled`.
+
+### `eviltwin` — PSK credential capture
+When a PSK beats offline cracking *and* WPS: an open twin of the authorized ESSID + a captive portal
+asks the user to re-enter the Wi-Fi password, and **every submission is validated against a real
+captured 4-way handshake** (`aircrack-ng`) — only the true PSK is accepted. Opt-in, start-on-demand,
+time-bounded, auto-disarm on success. Radio auto-selection health-probes adapters and routes around
+chipsets whose AP-mode TX is broken (e.g. mt76x0u), borrowing the reliable radio if needed.
+
+### `aprecon` — RF-side research enrichment
+Fills the research fingerprint **without LAN access**: a scope-locked passive client/PNL sweep plus a
+**lockout-safe WPS M1 read** — it reads the AP's M1 device attributes (real make / model / serial) and
+**aborts before any PIN is guessed**, so it adds no failed-auth. Turns `apresearch`'s generic
+"wireless AP" into a specific device → real analogues and a populated test plan.
+
+### `apstress` — AP thermal/power stress load (own-AP characterization)
+Drives maximum sustained SoC load via an `mdk4` **random-source-MAC** auth flood (surpasses per-MAC
+anti-flood; association-table churn keeps the SoC pegged) so the AP's heat/power response can be
+measured with an external IR thermometer / power meter. Sends **no WPS frames → cannot trip a WPS
+lockout**. The physics ceiling (fixed static power + a small dynamic term, and the AP's own thermal
+throttling) means RF load *characterizes* the thermal response — it does not destroy hardware.
+Bounded, opt-in, duty-cycled so the rest of the pipeline still gets the radio.
 
 ---
 
@@ -256,7 +303,9 @@ flowchart LR
 ```
 
 - Capture is allow-listed **and** the archiver refuses off-list BSSIDs.
-- No online password guessing, no WPS-PIN brute → no lockout, anywhere.
+- The **crack path** does no online guessing (offline only). The opt-in **active stages** are each
+  lockout-safe by design: WPS aborts on any lock/rate-limit + long cooldowns; `apstress` sends no WPS
+  frames; `eviltwin` only accepts a PSK that validates against a captured handshake. All ship **disarmed**.
 - Cross-host trust: one-directional, passphrase-free, **source-restricted**, least privilege.
 - **Nothing sensitive is committed** — real configs, captures, keys, and models are git-ignored.
 
@@ -269,17 +318,22 @@ Pipeline/
 ├── DESIGN.md                      architecture, theory, proven/limited status
 ├── README.md                      this file
 ├── capture/                       kali-pie
-│   ├── wpacrack.py                  single-shot + --harvest continuous library mode
+│   ├── wpacrack.py                  --harvest continuous library + shared radio lock + channel rediscovery
 │   ├── wpacrack-harvest.service     systemd unit
-│   └── wpacrack.conf.example        site config (allow-list, library, cooldown) — placeholders
-├── crack/                         home-pie
+│   └── wpacrack.conf.example        site config (allow-list, library, all stage toggles) — placeholders
+├── attack/                        kali-pie — opt-in active stages (all ship DISARMED)
+│   ├── wps_attack.py  + wps-attack.service  + wps-{status,run,arm,disarm}
+│   ├── eviltwin.py    + eviltwin.service    + eviltwin-{status,radiocheck,arm,disarm,run}
+│   └── apstress.py    + apstress.service    + apstress-{arm,disarm,run,stop,status}
+├── crack/                         home-pie (Pi 4)
 │   └── crackstack.sh                pull → markovgen → aircrack-ng, hardened
-├── research/                      kali-pie (relocatable)
-│   ├── apresearch.py                exploit-intel model
-│   ├── apresearch.service           continuous low-priority service
-│   ├── apvulnd.py                   AP fingerprint + searchsploit + discovery
-│   ├── apvuln.service
-│   └── apvuln.timer
+├── research/                      kali-pie (Pi 5 — the beefier box)
+│   ├── apresearch.py                exploit-intel model (cosine-rank parallelised across cores)
+│   ├── apresearch.service           continuous low-priority service (SCHED_IDLE)
+│   ├── apvulnd.py                   AP fingerprint + searchsploit (+ merges aprecon enrichment)
+│   ├── apvuln.service / apvuln.timer
+│   ├── aprecon.py                   RF fingerprint enrichment (client/PNL + lockout-safe WPS M1)
+│   └── aprecon.service / aprecon.timer / aprecon-{run,status}
 └── tools/
     └── mkhs.py                      synthetic WPA2 handshake generator (for e2e testing)
 ```
@@ -346,7 +400,12 @@ Verified locally: `aircrack-ng` cracks the generated handshake → `KEY FOUND! [
 | aircrack harness | ✅ proven | cracks handshakes natively on the Pi CPU |
 | **live crack on home-pie** | ✅ **proven** | candidate-file + aircrack → `KEY FOUND! [ password ]` at ~46–95k keys/s |
 | Pi candidate-file fix | ✅ done | 1.24M ordered candidates pre-generated + shipped; **no model-load at crack time** |
-| apresearch model | ✅ working | 47k-entry index, vuln-class predictions |
+| apresearch model | ✅ working | 47k-entry index, vuln-class predictions; **cosine-rank parallelised across the Pi 5's cores** |
+| WPS recovery (wps_attack) | ✅ working | pixie → conservative online PIN; aborts on lock + cooldowns; opt-in daemon |
+| Evil-twin PSK capture (eviltwin) | ✅ built | validates submissions vs a captured handshake; opt-in, radio auto-select |
+| RF enrichment (aprecon) | ✅ working | passive client/PNL + lockout-safe WPS M1 → specific device fingerprint |
+| Thermal/power stress (apstress) | ✅ built | random-MAC auth flood; **no WPS frames = no lockout**; own-AP characterization |
+| Channel rediscovery | ✅ working | harvest publishes current channel; all RF stages follow (2.4 auto / 5 GHz DFS) |
 | **home-pie Wi-Fi link** | ⚠️ unreliable | drops frequently → **put home-pie on Ethernet** (the one remaining caveat) |
 | markovgen live-gen on a Pi | ⚠️ superseded | heavy on ARM → replaced by the pre-generated candidate file; live model kept as a fallback |
 | hashcat on a Pi | ❌ unusable | pocl CPU kernel-init segfault → aircrack instead |
@@ -357,7 +416,7 @@ Verified locally: `aircrack-ng` cracks the generated handshake → `KEY FOUND! [
 1. **home-pie → Ethernet** — the one remaining reliability caveat.
 2. ✅ ~~Lighter model on the Pi~~ — **done**: pre-generated candidate file shipped; live crack proven.
 3. Unattended cron belt run end-to-end once home-pie is on a stable link.
-4. Optional: relocate `apresearch` onto home-pie to scale the research side.
+4. ✅ ~~relocate `apresearch` to scale~~ — kept on **kali-pie (Pi 5, the beefier box)**; home-pie is the weaker Pi 4, so instead `apresearch` was **parallelised across cores** there.
 5. **Cloud GPU crack fast-lane** — a rented GPU as the ultimate crack harness → see next section.
 6. Commit `markovgen.py` + the refined `crackstack` here.
 

@@ -1,0 +1,3 @@
+#!/bin/bash
+# force an immediate WPS sweep now (still gated by wps_enabled). Safe: reaver resumes its PIN session.
+systemctl restart wps-attack.service && sleep 2 && journalctl -u wps-attack.service -n 15 --no-pager

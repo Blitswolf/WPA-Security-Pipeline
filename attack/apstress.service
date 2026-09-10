@@ -1,0 +1,14 @@
+[Unit]
+Description=apstress - continual duty-cycled AP thermal/power stress load (armed; coexists via the radio lock)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/wpacrack/apstress.py --daemon
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

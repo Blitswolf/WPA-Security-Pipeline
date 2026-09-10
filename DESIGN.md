@@ -97,13 +97,52 @@ repo: **github.com/Blitswolf/Markovgen-Model**.
 When `searchsploit` finds no exact match for an AP, `apresearch` reasons over the *whole* local
 exploit-db (TF-IDF + char-4-gram similarity) to find the nearest analogues, predict likely
 vulnerability classes, and deep-mine those neighbours' exploit code into a concrete test plan.
-Runs continuously at low priority to use spare CPU. Standalone repo:
-**github.com/Blitswolf/Apresearch-Model**.
+Runs continuously at low priority to use spare CPU; its cosine-ranking is **parallelised across the
+Pi 5's cores** (workers fork after the index loads, sharing it copy-on-write) while staying
+`SCHED_IDLE`, so it uses the beefier box's spare cores yet yields instantly to the RF stack.
+Standalone repo: **github.com/Blitswolf/Apresearch-Model**.
 
 ### 2.6 `apvulnd` — AP recon (kali-pie)
 Low-priority timer that fingerprints the AP from harvested beacons (vendor/WPS/RSN/PMF/cipher),
 runs `searchsploit`, feeds fingerprints to `apresearch`, and — only when the AP's management IP is
-reachable — a bounded, **non-destructive** discovery sweep. Recon only; no brute, no lockout.
+reachable — a bounded, **non-destructive** discovery sweep. Recon only; no brute, no lockout. Its
+fingerprint is **enriched by `aprecon`** (§2.9) with real client/PNL data and the AP's WPS M1 identity.
+
+### 2.7 `wps_attack` — lockout-safe WPS recovery (kali-pie)
+Opt-in active stage for when the PSK won't crack offline. Recon (`wash`) → pixie-dust (`reaver -K` /
+`bully -d`) → a conservative online PIN **only** if pixie fails. It **aborts the instant** the AP
+signals a lock/rate-limit, throttles (`-d`/`-r`), never uses `--ignore-locks`, and applies per-target
+cooldowns (6 h dry / 24 h after a lock) — so it can never grind the AP into a WPS lockout. Continual
+daemon gated by `wps_enabled`; coexists with the harvest via a shared radio flock.
+
+### 2.8 `eviltwin` — PSK credential capture (kali-pie)
+When a PSK beats both offline cracking and WPS: an open twin of the authorized ESSID + a captive
+portal solicits the Wi-Fi password, and **every submission is validated against a real captured
+4-way handshake** (`aircrack-ng`) — only the true PSK is accepted, so there is no guessing. Opt-in,
+start-on-demand, time-bounded, auto-disarm on success. Radio auto-selection health-probes adapters
+and routes around chipsets whose AP-mode TX is broken (e.g. mt76x0u), borrowing the reliable radio.
+
+### 2.9 `aprecon` — RF-side research enrichment (kali-pie)
+Enriches the `apvulnd`/`apresearch` fingerprint **without LAN access**: a scope-locked passive
+client/PNL sweep plus a **lockout-safe WPS M1 read** — it reads the AP's M1 device attributes
+(real make / model / serial) and aborts **before any PIN**, adding no failed-auth. This turns the
+research model's generic "wireless AP" into a specific device, which is what finally populates its
+analogues and mined test plan.
+
+### 2.10 `apstress` — AP thermal/power stress load (kali-pie, own-AP characterization)
+Drives maximum sustained SoC load with an `mdk4` **random-source-MAC** auth flood (surpasses per-MAC
+anti-flood; association-table churn keeps the SoC pegged) so the AP's heat/power response can be
+measured externally (IR thermometer / power meter). Sends **no WPS frames**, so it cannot trip a WPS
+lockout. Fixed static power dominates total draw and the AP thermally throttles, so RF load
+*characterizes* the thermal response rather than destroying hardware. Bounded, opt-in, duty-cycled so
+the rest of the pipeline still gets the radio.
+
+### 2.11 Shared RF services
+- **Channel rediscovery (BSSID-anchored):** the harvest confirms the pinned channel each cycle and,
+  if the AP has moved (2.4 GHz auto-channel or a 5 GHz DFS radar move), sweeps 2.4 + 5 GHz to relocate
+  it and publishes the current channel; every RF stage follows it instead of sitting on a dead channel.
+- **Radio flock:** one wlan radio, shared — only one stage transmits at a time and all stay in monitor
+  mode, so no stage knocks the harvest off the air.
 
 ---
 
@@ -138,7 +177,11 @@ client ⇄ AP  ──(4-way handshake, over the air)──▶  kali-pie monitor 
 - The aircrack harness is correct: a synthetically-generated WPA2 handshake for a known password
   cracks to that password with `aircrack-ng` (`mkhs.py` builds the test handshake; verified
   locally: `KEY FOUND! [ password ]`).
-- `apresearch` builds its 47k-entry index and returns sensible vuln-class predictions.
+- `apresearch` builds its 47k-entry index and returns sensible vuln-class predictions (ranking
+  parallelised across the Pi 5's cores, verified identical to serial).
+- The **opt-in active stages** are built and scope-locked (all disarmed by default): WPS recovery
+  ran live and correctly **aborted on the AP's rate-limit** (24 h cooldown, no lockout); `aprecon`
+  enriches the research fingerprint; **channel rediscovery** follows the AP across a channel move.
 
 **Limited / pending (the accurate caveats)**
 - **home-pie's Wi-Fi link is unreliable** — it drops frequently, interrupting both management SSH
@@ -157,12 +200,15 @@ client ⇄ AP  ──(4-way handshake, over the air)──▶  kali-pie monitor 
 
 ## 5. Security & scope model
 - Capture is allow-listed to the operator's own AP BSSIDs and refuses anything else.
-- No online password guessing and no WPS-PIN brute anywhere — cracking is 100% offline, so no AP
-  lockout can be tripped.
+- The **crack path** is 100% offline (no online guessing), so cracking never risks a lockout. The
+  **opt-in active stages** (all disarmed by default) are each lockout-safe by design: WPS recovery
+  aborts on any lock/rate-limit and applies long cooldowns; `apstress` sends **no WPS frames**;
+  `eviltwin` only accepts a PSK that validates against a captured handshake.
 - Cross-host trust is one-directional, passphrase-free, and source-restricted, least-privilege.
 - No secrets or site identifiers are committed (real configs and captures are git-ignored).
 
 ## 6. Related repos
-- **WPAcrack.py** — the capture tool + harvest + this stack's components.
+- **WPAcrack.py** — the integrated stack: capture/harvest, WPS/eviltwin/apstress attack stages,
+  aprecon + apresearch/apvulnd research, channel rediscovery, and helpers.
 - **Markovgen-Model** — the candidate-generation model, standalone.
 - **Apresearch-Model** — the exploit-intelligence model, standalone.
