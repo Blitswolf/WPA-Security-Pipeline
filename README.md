@@ -342,6 +342,19 @@ Pipeline/
 
 ---
 
+## 🎛️ Pipeline ops controls
+
+One-command control of the whole stack (`ops/`, installed to `/usr/local/bin`):
+- **`pipeline-start`** — full start: brings up capture + research + the gated daemons. Offensive
+  stages (WPS / eviltwin / stress) start but stay **dormant** until their conf gate is armed.
+- **`pipeline-stop`** — **crash/panic stop**: disarms the offensive gates, kills live TX
+  (`mdk4`/`reaver`/`bully`/`aireplay`/`airodump`/`wash`/`hostapd`), stops every service, restores the
+  radios to managed + NetworkManager + netwatch, and frees the radio lock. Safe to hit any time.
+- **`pipeline-status`** — one-glance overview: services, armed gates, radio-lock holder, wlan modes,
+  live attack processes, published channels.
+
+---
+
 ## 🚀 Deploy & run
 
 **Capture (kali-pie):**
